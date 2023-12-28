@@ -958,4 +958,44 @@ public class DeadLetterPublishingRecovererTests {
 		ProducerRecord outRecord = producerRecordCaptor.getValue();
 	}
 
+	@SuppressWarnings({ "rawtypes", "unchecked" })
+	@Test
+	void getFailToDeserializeBytesDirectlyFromHeadersWhenRunningNative() {
+
+		System.setProperty("org.graalvm.nativeimage.imagecode", "runtime");
+
+		Headers headers = new RecordHeaders();
+		headers.add(DeadLetterPublishingRecoverer.KEY_FAILED_DESERIALIZATION_HEADER, "key".getBytes());
+		headers.add(DeadLetterPublishingRecoverer.VALUE_FAILED_DESERIALIZATION_HEADER, "value".getBytes());
+
+		Headers custom = new RecordHeaders();
+		custom.add(new RecordHeader("foo", "bar".getBytes()));
+
+		CompletableFuture future = new CompletableFuture();
+		future.complete(new Object());
+
+		KafkaOperations<byte[], byte[]> template = mock(KafkaOperations.class);
+		willReturn(future).given(template).send(any(ProducerRecord.class));
+
+		ConsumerRecord<String, String> record = new ConsumerRecord<>("foo", 0, 0L, 0L, TimestampType.CREATE_TIME,
+				0, 0, "key", "baz", headers, Optional.empty());
+
+		DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(template);
+		recoverer.setHeadersFunction((rec, ex) -> custom);
+		recoverer.accept(record, new RuntimeException("testV"));
+
+		ArgumentCaptor<ProducerRecord> captor = ArgumentCaptor.forClass(ProducerRecord.class);
+		verify(template).send(captor.capture());
+
+		ProducerRecord recovered = captor.getValue();
+		assertThat(recovered.key()).isEqualTo("key");
+		assertThat(recovered.value()).isEqualTo("baz");
+
+		headers = recovered.headers();
+		assertThat(headers.lastHeader(DeadLetterPublishingRecoverer.KEY_FAILED_DESERIALIZATION_HEADER)).isNull();
+		assertThat(headers.lastHeader(DeadLetterPublishingRecoverer.VALUE_FAILED_DESERIALIZATION_HEADER)).isNull();
+		assertThat(headers.lastHeader("foo")).isNotNull();
+		assertThat(headers.lastHeader(KafkaHeaders.DLT_EXCEPTION_MESSAGE).value()).isEqualTo("testV".getBytes());
+	}
+
 }

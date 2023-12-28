@@ -45,6 +45,7 @@ import org.apache.kafka.common.header.Headers;
 import org.apache.kafka.common.header.internals.RecordHeader;
 import org.apache.kafka.common.header.internals.RecordHeaders;
 
+import org.springframework.core.NativeDetector;
 import org.springframework.core.log.LogAccessor;
 import org.springframework.kafka.KafkaException;
 import org.springframework.kafka.core.KafkaOperations;
@@ -134,6 +135,18 @@ public class DeadLetterPublishingRecoverer extends ExceptionClassifier implement
 			.keyExceptionStacktrace(KafkaHeaders.DLT_KEY_EXCEPTION_STACKTRACE)
 			.exceptionStacktrace(KafkaHeaders.DLT_EXCEPTION_STACKTRACE)
 		.build();
+
+	private static final String FAILED_DESERIALIZATION_HEADER_PREFIX = "failedDeserializationByteArray";
+
+	/**
+	 * Header name for the key bytes that failed to deserialize.
+	 */
+	public static final String KEY_FAILED_DESERIALIZATION_HEADER = FAILED_DESERIALIZATION_HEADER_PREFIX + "Key";
+
+	/**
+	 * Header name for the value bytes that failed to deserialize.
+	 */
+	public static final String VALUE_FAILED_DESERIALIZATION_HEADER = FAILED_DESERIALIZATION_HEADER_PREFIX + "Value";
 
 	/**
 	 * Create an instance with the provided template and a default destination resolving
@@ -520,16 +533,49 @@ public class DeadLetterPublishingRecoverer extends ExceptionClassifier implement
 		if (consumer != null && this.verifyPartition) {
 			tp = checkPartition(tp, consumer);
 		}
-		DeserializationException vDeserEx = SerializationUtils.getExceptionFromHeader(record,
-				SerializationUtils.VALUE_DESERIALIZER_EXCEPTION_HEADER, this.logger);
-		DeserializationException kDeserEx = SerializationUtils.getExceptionFromHeader(record,
-				SerializationUtils.KEY_DESERIALIZER_EXCEPTION_HEADER, this.logger);
-		Headers headers = new RecordHeaders(record.headers().toArray());
-		addAndEnhanceHeaders(record, exception, vDeserEx, kDeserEx, headers);
-		ProducerRecord<Object, Object> outRecord = createProducerRecord(record, tp, headers,
-				kDeserEx == null ? null : kDeserEx.getData(), vDeserEx == null ? null : vDeserEx.getData());
-		KafkaOperations<Object, Object> kafkaTemplate =
-				(KafkaOperations<Object, Object>) this.templateResolver.apply(outRecord);
+
+		var runningInNativeImage = NativeDetector.inNativeImage(NativeDetector.Context.RUN,
+				NativeDetector.Context.BUILD);
+
+		ProducerRecord<Object, Object> outRecord;
+		Headers existingHeaders = record.headers();
+
+		if (runningInNativeImage) {
+
+			Header failedDeserializationOfKeyBytesHeader =
+					existingHeaders.lastHeader(KEY_FAILED_DESERIALIZATION_HEADER);
+			byte[] keyFailedDeserializationBytes = Optional.ofNullable(failedDeserializationOfKeyBytesHeader)
+					.map(Header::value)
+					.orElse(null);
+			existingHeaders.remove(KEY_FAILED_DESERIALIZATION_HEADER);
+
+			Header failedDeserializationOfValueBytesHeader =
+					existingHeaders.lastHeader(VALUE_FAILED_DESERIALIZATION_HEADER);
+			byte[] valueFailedDeserializationBytes = Optional.ofNullable(failedDeserializationOfValueBytesHeader)
+					.map(Header::value)
+					.orElse(null);
+			existingHeaders.remove(VALUE_FAILED_DESERIALIZATION_HEADER);
+
+			Headers headers = new RecordHeaders(existingHeaders.toArray());
+			addAndEnhanceHeaders(record, exception, null, null, headers);
+
+			outRecord = createProducerRecord(record, tp, headers,
+					keyFailedDeserializationBytes, valueFailedDeserializationBytes);
+		}
+		else {
+
+			DeserializationException vDeserEx = SerializationUtils.getExceptionFromHeader(record,
+					SerializationUtils.VALUE_DESERIALIZER_EXCEPTION_HEADER, this.logger);
+			DeserializationException kDeserEx = SerializationUtils.getExceptionFromHeader(record,
+					SerializationUtils.KEY_DESERIALIZER_EXCEPTION_HEADER, this.logger);
+			Headers headers = new RecordHeaders(existingHeaders.toArray());
+			addAndEnhanceHeaders(record, exception, vDeserEx, kDeserEx, headers);
+			outRecord = createProducerRecord(record, tp, headers,
+					kDeserEx == null ? null : kDeserEx.getData(),
+					vDeserEx == null ? null : vDeserEx.getData());
+		}
+
+		var kafkaTemplate = (KafkaOperations<Object, Object>) this.templateResolver.apply(outRecord);
 		sendOrThrow(outRecord, kafkaTemplate, record);
 	}
 
