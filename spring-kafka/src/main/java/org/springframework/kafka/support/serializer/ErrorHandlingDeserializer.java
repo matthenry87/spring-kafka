@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2023 the original author or authors.
+ * Copyright 2018-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,8 +20,11 @@ import java.util.Map;
 import java.util.function.Function;
 
 import org.apache.kafka.common.header.Headers;
+import org.apache.kafka.common.header.internals.RecordHeader;
 import org.apache.kafka.common.serialization.Deserializer;
 
+import org.springframework.core.NativeDetector;
+import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.util.Assert;
 import org.springframework.util.ClassUtils;
 import org.springframework.validation.Validator;
@@ -205,6 +208,14 @@ public class ErrorHandlingDeserializer<T> implements Deserializer<T> {
 
 	@Override
 	public T deserialize(String topic, Headers headers, byte[] data) {
+
+		var inNativeImage = NativeDetector.inNativeImage(NativeDetector.Context.BUILD, NativeDetector.Context.RUN);
+
+		if (inNativeImage) {
+
+			return deserializeNative(topic, headers, data);
+		}
+
 		try {
 			if (this.isForKey) {
 				headers.remove(SerializationUtils.KEY_DESERIALIZER_EXCEPTION_HEADER);
@@ -220,7 +231,30 @@ public class ErrorHandlingDeserializer<T> implements Deserializer<T> {
 		}
 	}
 
-	private T validate(T deserialized) {
+	private T deserializeNative(String topic, Headers headers, byte[] data) {
+		try {
+			if (this.isForKey) {
+
+				headers.remove(DeadLetterPublishingRecoverer.KEY_FAILED_DESERIALIZATION_HEADER);
+			}
+			else {
+
+				headers.remove(DeadLetterPublishingRecoverer.VALUE_FAILED_DESERIALIZATION_HEADER);
+			}
+			return validate(this.delegate.deserialize(topic, headers, data));
+		}
+		catch (Exception e) {
+
+			headers.add(new RecordHeader(this.isForKey
+					? DeadLetterPublishingRecoverer.KEY_FAILED_DESERIALIZATION_HEADER
+					: DeadLetterPublishingRecoverer.VALUE_FAILED_DESERIALIZATION_HEADER,
+					data));
+
+			return recoverFromSupplier(topic, headers, data, e);
+		}
+	}
+
+	T validate(T deserialized) {
 		if (this.validator == null || !this.validator.supports(deserialized.getClass())) {
 			return deserialized;
 		}
@@ -228,7 +262,7 @@ public class ErrorHandlingDeserializer<T> implements Deserializer<T> {
 		return deserialized;
 	}
 
-	private T recoverFromSupplier(String topic, Headers headers, byte[] data, Exception exception) {
+	T recoverFromSupplier(String topic, Headers headers, byte[] data, Exception exception) {
 		if (this.failedDeserializationFunction != null) {
 			FailedDeserializationInfo failedDeserializationInfo =
 					new FailedDeserializationInfo(topic, headers, data, this.isForKey, exception);

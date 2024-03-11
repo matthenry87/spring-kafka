@@ -22,6 +22,7 @@ plugins {
 	id 'org.ajoberstar.grgit' version '4.1.1'
 	id 'io.spring.nohttp' version '0.0.11'
 	id 'io.spring.dependency-management' version '1.1.4' apply false
+	id 'org.graalvm.buildtools.native' version '0.9.28'
 }
 
 apply plugin: 'io.spring.nohttp'
@@ -129,6 +130,7 @@ configure(javaProjects) { subproject ->
 	apply plugin: 'checkstyle'
 	apply plugin: 'kotlin'
 	apply plugin: 'kotlin-spring'
+
 
 	java {
 		withJavadocJar()
@@ -261,7 +263,6 @@ configure(javaProjects) { subproject ->
 		options.addBooleanOption('Xdoclint:syntax', true) // only check syntax with doclint
 		options.addBooleanOption('Werror', true) // fail build on Javadoc warnings
 	}
-
 }
 
 project ('spring-kafka') {
@@ -271,7 +272,7 @@ project ('spring-kafka') {
 		api 'org.springframework:spring-context'
 		api 'org.springframework:spring-messaging'
 		api 'org.springframework:spring-tx'
-		api ("org.springframework.retry:spring-retry:$springRetryVersion") {
+		api("org.springframework.retry:spring-retry:$springRetryVersion") {
 			exclude group: 'org.springframework'
 		}
 		api "org.apache.kafka:kafka-clients:$kafkaVersion"
@@ -281,12 +282,12 @@ project ('spring-kafka') {
 		optionalApi 'com.fasterxml.jackson.datatype:jackson-datatype-jdk8'
 		optionalApi 'com.fasterxml.jackson.datatype:jackson-datatype-jsr310'
 		optionalApi 'com.fasterxml.jackson.datatype:jackson-datatype-joda'
-		optionalApi ('com.fasterxml.jackson.module:jackson-module-kotlin') {
+		optionalApi('com.fasterxml.jackson.module:jackson-module-kotlin') {
 			exclude group: 'org.jetbrains.kotlin'
 		}
 
 		// Spring Data projection message binding support
-		optionalApi ("org.springframework.data:spring-data-commons") {
+		optionalApi("org.springframework.data:spring-data-commons") {
 			exclude group: 'org.springframework'
 			exclude group: 'io.micrometer'
 		}
@@ -298,17 +299,52 @@ project ('spring-kafka') {
 		api 'io.micrometer:micrometer-observation'
 		optionalApi 'io.micrometer:micrometer-tracing'
 
-		testImplementation project (':spring-kafka-test')
+		testImplementation project(':spring-kafka-test')
 		testImplementation 'io.projectreactor:reactor-test'
 		testImplementation "org.mockito:mockito-junit-jupiter:$mockitoVersion"
 		testImplementation "org.hibernate.validator:hibernate-validator:$hibernateValidationVersion"
-		testImplementation ('io.micrometer:micrometer-observation-test') {
+		testImplementation('io.micrometer:micrometer-observation-test') {
 			exclude group: "org.mockito"
 		}
 		testImplementation 'io.micrometer:micrometer-tracing-bridge-brave'
 		testImplementation 'io.micrometer:micrometer-tracing-test'
-		testImplementation ('io.micrometer:micrometer-tracing-integration-test') {
+		testImplementation('io.micrometer:micrometer-tracing-integration-test') {
 			exclude group: "org.mockito"
+		}
+	}
+
+
+	graalvmNative {
+
+		binaries.all {
+			resources.autodetect()
+		}
+		toolchainDetection = false
+	}
+
+	publishing {
+		publications {
+			mavenJava(MavenPublication) {
+//				artifact docsZip
+//				artifact distZip
+			}
+		}
+
+		repositories {
+			maven {
+				credentials {
+					username "jenkins-deployment"
+					password "sdlcdev"
+				}
+
+				allowInsecureProtocol true
+
+				if(project.version.endsWith('-SNAPSHOT')) {
+					url "https://slflokydlnexs01.infoftps.com:8081/nexus/content/repositories/snapshots"
+				} else {
+					url "https://slflokydlnexs01.infoftps.com:8081/nexus/content/repositories/releases"
+				}
+			}
 		}
 	}
 }

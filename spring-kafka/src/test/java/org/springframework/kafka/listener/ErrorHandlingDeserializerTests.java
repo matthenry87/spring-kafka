@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2023 the original author or authors.
+ * Copyright 2018-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.ByteArrayInputStream;
 import java.io.ObjectInputStream;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -36,11 +38,13 @@ import org.apache.kafka.common.serialization.Deserializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.assertj.core.api.InstanceOfAssertFactories;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.NativeDetector;
 import org.springframework.kafka.annotation.EnableKafka;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
@@ -57,6 +61,7 @@ import org.springframework.kafka.test.EmbeddedKafkaZKBroker;
 import org.springframework.kafka.test.utils.KafkaTestUtils;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.junit.jupiter.SpringJUnitConfig;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.validation.Errors;
 import org.springframework.validation.Validator;
 
@@ -112,6 +117,37 @@ public class ErrorHandlingDeserializerTests {
 		assertThat(result).isNull();
 		Header deser = headers.lastHeader(SerializationUtils.VALUE_DESERIALIZER_EXCEPTION_HEADER);
 		assertThat(new ObjectInputStream(new ByteArrayInputStream(deser.value())).readObject()).isInstanceOf(DeserializationException.class);
+		ehd.close();
+	}
+
+	@Test
+	@Disabled
+	void unitTestsNative() {
+
+		ErrorHandlingDeserializer<String> ehd = new ErrorHandlingDeserializer<>(new StringDeserializer());
+		assertThat(ehd.deserialize("topic", "foo".getBytes())).isEqualTo("foo");
+		ehd.close();
+		ehd = new ErrorHandlingDeserializer<>(new Deserializer<>() {
+
+			@Override
+			public void configure(Map<String, ?> configs, boolean isKey) {
+			}
+
+			@Override
+			public String deserialize(String topic, byte[] data) {
+				throw new RuntimeException("fail");
+			}
+
+			@Override
+			public void close() {
+			}
+
+		});
+		Headers headers = new RecordHeaders();
+		Object result = ehd.deserialize("topic", headers, "foo".getBytes());
+		assertThat(result).isNull();
+		Header deser = headers.lastHeader(DeadLetterPublishingRecoverer.VALUE_FAILED_DESERIALIZATION_HEADER);
+		assertThat(deser.value()).isEqualTo("foo".getBytes());
 		ehd.close();
 	}
 
